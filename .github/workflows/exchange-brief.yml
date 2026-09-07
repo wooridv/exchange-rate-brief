@@ -1,0 +1,78 @@
+name: 환율 브리핑
+
+on:
+  schedule:
+    # GitHub 크론은 UTC 기준(수 분 지연 가능). 평일(월~금)만.
+    - cron: "0 0 * * 1-5"   # 09:00 KST  아침
+    - cron: "0 3 * * 1-5"   # 12:00 KST  점심
+    - cron: "0 6 * * 1-5"   # 15:00 KST  오후
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "수동 실행 슬롯"
+        required: false
+        default: "morning"
+        type: choice
+        options: [morning, lunch, afternoon]
+
+permissions:
+  contents: write   # data/history.jsonl 커밋
+  pages: write
+  id-token: write
+
+concurrency:
+  group: exchange-brief
+  cancel-in-progress: false
+
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 브리핑 실행
+        env:
+          JANDI_WEBHOOK_URL: ${{ secrets.JANDI_WEBHOOK_URL }}
+          REPORT_BASE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+          HISTORY_DAYS: "60"
+        run: |
+          # 어떤 크론(=시각)에 실행됐는지로 슬롯을 확정(지연돼도 안전)
+          case "${{ github.event.schedule }}" in
+            "0 0 * * 1-5") SLOT="morning" ;;
+            "0 3 * * 1-5") SLOT="lunch" ;;
+            "0 6 * * 1-5") SLOT="afternoon" ;;
+            *) SLOT="${{ github.event.inputs.slot || 'morning' }}" ;;
+          esac
+          echo "slot=$SLOT"
+          python brief.py --out site --slot "$SLOT"
+
+      - name: 히스토리 커밋
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/history.jsonl
+          git diff --cached --quiet || git commit -m "chore: 환율 히스토리 업데이트"
+          git push || echo "push 생략(변경 없음)"
+
+      - name: 리포트 폴더 보장
+        run: |
+          mkdir -p site
+          [ -f site/index.html ] || echo '<!doctype html><meta charset="utf-8"><p>아직 브리핑이 없습니다.</p>' > site/index.html
+
+      - name: Pages 아티팩트 업로드
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: GitHub Pages 배포
+        id: deploy
+        uses: actions/deploy-pages@v4
