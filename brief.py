@@ -363,14 +363,53 @@ def detect_alerts(history, snapshot, today, threshold, now, cooldown_min):
     return out
 
 
-def alert_body(alerts, now, report_url=None):
+def day_open_base(history, today, code):
+    """오늘 첫 기록(≈오전 9시) 매매기준율 → 일중 누적 스윙 기준."""
+    for h in history:  # 이른 것부터
+        if h.get("date") == today:
+            r = (h.get("rates") or {}).get(code)
+            if r and r.get("base") is not None:
+                return r["base"]
+    return None
+
+
+def swing_alerted_today(history, today, code, direction):
+    tag = code + direction
+    return any(h.get("date") == today and tag in (h.get("swingAlerts") or []) for h in history)
+
+
+def detect_swings(history, snapshot, today, swing_pct):
+    """오늘 시가 대비 |변동%| >= swing_pct 이고, 방향별 오늘 미알림인 통화."""
+    out = []
+    for code, cur in snapshot.items():
+        op = day_open_base(history, today, code)
+        if not op or not cur.get("base"):
+            continue
+        p = pct(cur["base"], op)
+        if p is None or abs(p) < swing_pct:
+            continue
+        d = "+" if p > 0 else "-"
+        if swing_alerted_today(history, today, code, d):
+            continue
+        out.append({"code": code, "pct": p, "buy": cur["buy"], "sell": cur["sell"],
+                    "kind": "swing", "dir": d})
+    return out
+
+
+def _alert_line(a):
+    if a.get("kind") == "swing":
+        tag = "오늘 %s" % sgn(a["pct"])            # 오늘 ▼0.61% (9시 대비 누적)
+    else:
+        tag = "%s %s" % ("급등" if a["pct"] > 0 else "급락", sgn(a["pct"]))  # 직전 10분 대비
+    return "%s %s %s · 살때 %s 팔때 %s" % (
+        FLAG.get(a["code"], ""), KO_NAME.get(a["code"], a["code"]), tag,
+        _fmt(a["buy"]), _fmt(a["sell"]))
+
+
+def alert_body(items, now, report_url=None):
     lines = ["🚨 환율 급변 알림  %s" % now.strftime("%H:%M")]
-    for a in alerts[:4]:
-        move = "급등" if a["pct"] > 0 else "급락"
-        lines.append("%s %s %s %s · 살때 %s 팔때 %s" % (
-            FLAG.get(a["code"], ""), KO_NAME.get(a["code"], a["code"]), move,
-            sgn(a["pct"]), _fmt(a["buy"]), _fmt(a["sell"])))
-    lines.append("직전 갱신 대비 급변 · 그 외 통화는 안정")
+    for a in items[:4]:
+        lines.append(_alert_line(a))
     if report_url:
         lines.append("🔗 상세: %s" % report_url)
     return "\n".join(lines[:7])
@@ -554,33 +593,43 @@ def main(argv=None):
                "--no-post" if args.no_post else "웹훅 미설정")
         print("\n잔디 미발송: %s" % why)
 
-    # 급변 알림(오전 9시~오후 6시). 직전 슬롯(같은 날) 대비 급등/급락 시 별도 발송.
-    alerted = []
+    # 급변 알림(오전 9시~오후 6시). ① 순간 급변(직전 10분 ±ALERT_PCT) ② 일중 누적 스윙(오늘 9시 대비 ±SWING_PCT)
+    alerted, swing_tags = [], []
     threshold = float(os.environ.get("ALERT_PCT", "0.4"))
+    swing_pct = float(os.environ.get("ALERT_SWING_PCT", "0.5"))
     cooldown = int(os.environ.get("ALERT_COOLDOWN_MIN", "60"))
     a_start = int(os.environ.get("ALERT_START_HOUR", "9"))
     a_end = int(os.environ.get("ALERT_END_HOUR", "18"))
     report_url = os.environ.get("REPORT_BASE_URL", "").strip() or None
     in_window = a_start <= now.hour < a_end
     if in_window and not args.no_post and webhook:
-        cand = detect_alerts(history, snapshot, bundle["date"], threshold, now, cooldown)
-        if cand:
-            ab = alert_body(cand, now, report_url)
-            sa, ra = post_jandi(webhook, ab, "#dc2626")
+        spikes = detect_alerts(history, snapshot, bundle["date"], threshold, now, cooldown)
+        swings = detect_swings(history, snapshot, bundle["date"], swing_pct)
+        # 통화별 병합(누적 스윙 우선 표시). 발송은 한 건으로.
+        by_code = {}
+        for a in spikes:
+            by_code[a["code"]] = a
+        for a in swings:
+            by_code[a["code"]] = a
+        items = list(by_code.values())
+        if items:
+            sa, ra = post_jandi(webhook, alert_body(items, now, report_url), "#dc2626")
             if 200 <= sa < 300:
-                alerted = [a["code"] for a in cand]
-                print("\n🚨 급변 알림 발송(%s): %s" %
-                      (",".join(alerted), " · ".join("%s %s" % (c["code"], sgn(c["pct"])) for c in cand)))
+                alerted = [a["code"] for a in spikes]                 # 순간급변 → 쿨다운 마킹
+                swing_tags = [a["code"] + a["dir"] for a in swings]   # 누적스윙 → 방향별 하루1회 마킹
+                print("\n🚨 급변 알림 발송: %s" %
+                      " · ".join("%s %s(%s)" % (KO_NAME.get(a["code"], a["code"]), sgn(a["pct"]),
+                                                a.get("kind", "spike")) for a in items))
             else:
                 print("\n급변 알림 발송 실패:", sa, ra)
 
-    # 시간별 히스토리 기록(같은 분 중복만 방지). 발송 성공 시 postSlot/alerts 마킹.
+    # 시간별 히스토리 기록(같은 분 중복만 방지). 발송 성공 시 postSlot/alerts/swingAlerts 마킹.
     if not point_exists(history, bundle["date"], point_label):
         append_history({
             "ts": now.isoformat(timespec="minutes"),
             "date": bundle["date"], "slotLabel": point_label,
             "postSlot": (post_slot if (do_post and posted_ok) else None),
-            "alerts": alerted,
+            "alerts": alerted, "swingAlerts": swing_tags,
             "rates": snapshot,
         })
         print("히스토리 기록: %s (%s)" % (HISTORY_FILE, point_label))

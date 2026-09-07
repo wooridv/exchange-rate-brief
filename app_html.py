@@ -250,7 +250,7 @@ function render(){
 
   <footer>
     데이터 출처: <a href="https://finance.naver.com/marketindex/" target="_blank" rel="noopener">네이버 금융 시장지표 ↗</a> · 하나은행 고시 기준<br>
-    평일 오전 9시 잔디 브리핑 · 사이트는 장중(9~16시) 수시 갱신 · 최근 ${esc(DATA.generated||'')}
+    평일 오전 9시 잔디 브리핑 · 급변 시 실시간 알림(9~18시) · 사이트는 장중 10분 갱신 · 최근 ${esc(DATA.generated||'')}
     <div class="disc">※ 규칙기반 참고 지표이며 투자자문이 아닙니다. 실제 거래 환율은 은행·시점별로 다릅니다.</div>
   </footer>`;
 
