@@ -47,13 +47,15 @@ CURRENCIES = [
     ("CNY", "FX_CNYKRW", "\U0001F1E8\U0001F1F3", "CNY", "위안 (1¥)"),
 ]
 KO_NAME = {"USD": "달러", "EUR": "유로", "JPY": "엔화", "CNY": "위안"}
+FLAG = {k: f for k, _c, f, _l, _u in CURRENCIES}
 PRICES_URL = "https://api.stock.naver.com/marketindex/exchange/%s/prices?page=1&pageSize=%d"
 WEEKDAY_KO = ["월", "화", "수", "목", "금", "토", "일"]
 HISTORY_FILE = os.path.join("data", "history.jsonl")
 SOURCE_NAME = "네이버 금융 · 하나은행 고시"
 
-# KST 시(hour) → (슬롯키, 표시라벨)
-SLOT_MAP = {9: ("morning", "09:00"), 12: ("lunch", "12:00"), 15: ("afternoon", "15:00")}
+# KST 시(hour) → (슬롯키, 표시라벨). 잔디 발송은 오전 9시 1회만.
+# (사이트/시간별 데이터는 워크플로가 장중 20분마다 계속 갱신)
+SLOT_MAP = {9: ("morning", "09:00")}
 SLOT_KO = {"morning": "아침", "lunch": "점심", "afternoon": "오후", "adhoc": "수시"}
 
 
@@ -323,7 +325,58 @@ def prev_slot_rates(history, code):
     return None
 
 
-def intraday_series(history, code, limit=48):
+def prev_slot_full(history, code):
+    """가장 최근 슬롯의 (값, 날짜, 라벨) → 인트라데이 급변 감지용."""
+    for h in reversed(history):
+        r = (h.get("rates") or {}).get(code)
+        if r and r.get("base") is not None:
+            return r, h.get("date"), h.get("slotLabel")
+    return None, None, None
+
+
+def last_alert_dt(history, code):
+    """해당 통화의 마지막 알림 시각(datetime) → 쿨다운 판정."""
+    for h in reversed(history):
+        if code in (h.get("alerts") or []):
+            try:
+                return dt.datetime.fromisoformat(h.get("ts"))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def detect_alerts(history, snapshot, today, threshold, now, cooldown_min):
+    """직전 슬롯(같은 날) 대비 |변동%| >= threshold 인 통화 목록. 쿨다운 적용."""
+    out = []
+    for code, cur in snapshot.items():
+        prev, pdate, plabel = prev_slot_full(history, code)
+        if not prev or pdate != today or not prev.get("base") or not cur.get("base"):
+            continue  # 인트라데이(같은 날) 비교만 → 오버나이트 갭 제외
+        p = pct(cur["base"], prev["base"])
+        if p is None or abs(p) < threshold:
+            continue
+        last = last_alert_dt(history, code)
+        if last is not None and (now - last).total_seconds() < cooldown_min * 60:
+            continue  # 쿨다운: 최근 알림 후 일정 시간 내 재알림 금지
+        out.append({"code": code, "pct": p, "buy": cur["buy"], "sell": cur["sell"],
+                    "base": cur["base"], "from": plabel})
+    return out
+
+
+def alert_body(alerts, now, report_url=None):
+    lines = ["🚨 환율 급변 알림  %s" % now.strftime("%H:%M")]
+    for a in alerts[:4]:
+        move = "급등" if a["pct"] > 0 else "급락"
+        lines.append("%s %s %s %s · 살때 %s 팔때 %s" % (
+            FLAG.get(a["code"], ""), KO_NAME.get(a["code"], a["code"]), move,
+            sgn(a["pct"]), _fmt(a["buy"]), _fmt(a["sell"])))
+    lines.append("직전 갱신 대비 급변 · 그 외 통화는 안정")
+    if report_url:
+        lines.append("🔗 상세: %s" % report_url)
+    return "\n".join(lines[:7])
+
+
+def intraday_series(history, code, limit=60):
     """대시보드 시간별(슬롯) 시계열."""
     out = []
     for h in history[-limit:]:
@@ -501,12 +554,33 @@ def main(argv=None):
                "--no-post" if args.no_post else "웹훅 미설정")
         print("\n잔디 미발송: %s" % why)
 
-    # 시간별 히스토리 기록(같은 분 중복만 방지). 발송 성공 시 postSlot 마킹.
+    # 급변 알림(오전 9시~오후 6시). 직전 슬롯(같은 날) 대비 급등/급락 시 별도 발송.
+    alerted = []
+    threshold = float(os.environ.get("ALERT_PCT", "0.4"))
+    cooldown = int(os.environ.get("ALERT_COOLDOWN_MIN", "60"))
+    a_start = int(os.environ.get("ALERT_START_HOUR", "9"))
+    a_end = int(os.environ.get("ALERT_END_HOUR", "18"))
+    report_url = os.environ.get("REPORT_BASE_URL", "").strip() or None
+    in_window = a_start <= now.hour < a_end
+    if in_window and not args.no_post and webhook:
+        cand = detect_alerts(history, snapshot, bundle["date"], threshold, now, cooldown)
+        if cand:
+            ab = alert_body(cand, now, report_url)
+            sa, ra = post_jandi(webhook, ab, "#dc2626")
+            if 200 <= sa < 300:
+                alerted = [a["code"] for a in cand]
+                print("\n🚨 급변 알림 발송(%s): %s" %
+                      (",".join(alerted), " · ".join("%s %s" % (c["code"], sgn(c["pct"])) for c in cand)))
+            else:
+                print("\n급변 알림 발송 실패:", sa, ra)
+
+    # 시간별 히스토리 기록(같은 분 중복만 방지). 발송 성공 시 postSlot/alerts 마킹.
     if not point_exists(history, bundle["date"], point_label):
         append_history({
             "ts": now.isoformat(timespec="minutes"),
             "date": bundle["date"], "slotLabel": point_label,
             "postSlot": (post_slot if (do_post and posted_ok) else None),
+            "alerts": alerted,
             "rates": snapshot,
         })
         print("히스토리 기록: %s (%s)" % (HISTORY_FILE, point_label))
