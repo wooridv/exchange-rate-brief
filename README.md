@@ -16,8 +16,14 @@
 | `brief.py` | 수집 → 신호계산 → 사이트 생성 → 잔디 발송 (메인) |
 | `app_html.py` | 대시보드 SPA(`SPA_HTML`) — 카드/차트/AI게이지 |
 | `holidays.py` | 한국 공휴일·대체공휴일 집합 (**매년 갱신 필요**) |
-| `data/history.jsonl` | 슬롯(시간별) 시계열 누적 — 그래프 원천, 저장소 커밋 대상 |
-| `.github/workflows/exchange-brief.yml` | 크론 3회 + 히스토리 커밋 + Pages 배포 |
+| `data/history.jsonl` | 시간별(전시간 대비) 시계열 — 실행 간 `actions/cache`로 유지(전일 데이터는 네이버에서 매번 전체 수집) |
+| `.github/workflows/exchange-brief.yml` | 장중 20분마다 갱신(잔디는 09/12/15시 1회) + Pages 배포 |
+
+## 갱신 주기 / 실시간
+
+- **장중(평일 09~16시 KST) 20분마다** GitHub Actions가 사이트·시간별 데이터를 갱신하고, 대시보드는 60초마다 자동 새로고침해 "준실시간"으로 보여줍니다(상단 "실시간" 표시).
+- **잔디 발송은 09:00 / 12:00 / 15:00에 각 1회만** (그 외 갱신 실행은 사이트만 업데이트).
+- 정적 사이트라 브라우저가 네이버를 직접 부를 수 없어(CORS) 초 단위 실시간은 아니며, 갱신 주기만큼의 지연이 있습니다.
 
 ## AI 매수 분석(규칙기반)
 
@@ -50,7 +56,7 @@ python brief.py --out site --slot morning --no-post  # 사이트+히스토리, �
 1. 이 폴더를 새 GitHub 저장소로 push
 2. **Settings → Secrets and variables → Actions** 에 `JANDI_WEBHOOK_URL` 등록
 3. **Settings → Pages → Source: GitHub Actions** 활성화
-4. **Actions → 환율 브리핑 → Run workflow** 로 수동 확인 → 이후 평일 3회 자동 실행
+4. **Actions → 환율 브리핑 → Run workflow** 로 수동 확인 → 이후 장중 20분마다 자동 갱신(잔디 09/12/15시 발송)
 
 ## 개인정보 · 보안
 

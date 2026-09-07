@@ -47,6 +47,10 @@ a{color:var(--accent);text-decoration:none}
 .slotbadge{font-size:12.5px;font-weight:700;color:var(--accent);background:var(--accentSoft);
   padding:6px 11px;border-radius:999px;white-space:nowrap}
 .gen{font-size:12px;color:var(--mut);white-space:nowrap}
+.live{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:800;color:var(--good);
+  background:var(--goodSoft);padding:6px 10px;border-radius:999px;white-space:nowrap}
+.lvdot{width:8px;height:8px;border-radius:50%;background:var(--good);animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(.65)}}
 @media(max-width:560px){.brand{font-size:15px}.gen{display:none}}
 
 /* hero */
@@ -68,6 +72,7 @@ a{color:var(--accent);text-decoration:none}
 .cc .flag{font-size:20px}
 .cc .lab{font-weight:800;font-size:15px}
 .cc .unit{font-size:11px;color:var(--faint);margin-left:auto}
+.cc .cclab{font-size:11px;color:var(--accent);font-weight:800;letter-spacing:.02em;margin-bottom:1px}
 .cc .buy{font-size:27px;font-weight:800;letter-spacing:-.02em;line-height:1.1}
 .cc .buy .w{font-size:12px;color:var(--mut);font-weight:700;margin-left:3px}
 .cc .rows{display:flex;justify-content:space-between;font-size:12.5px;color:var(--mut);margin-top:6px}
@@ -97,6 +102,9 @@ a{color:var(--accent);text-decoration:none}
 .seg button{border:0;background:transparent;color:var(--mut);font:inherit;font-weight:700;font-size:12.5px;
   padding:6px 11px;border-radius:8px;cursor:pointer;transition:.15s}
 .seg button.on{background:var(--accent);color:#fff}
+.clegend{display:flex;gap:14px;flex-wrap:wrap;margin:2px 2px 6px;min-height:0}
+.clegend .lg{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--mut)}
+.clegend .sw{width:14px;height:3px;border-radius:2px}
 #chart{width:100%;height:320px}
 #chart .grid line{stroke:var(--line);stroke-dasharray:2 4}
 #chart .axis text{fill:var(--faint);font-size:11px}
@@ -149,6 +157,7 @@ footer{margin-top:30px;color:var(--mut);font-size:12px;text-align:center;line-he
 <div class="top"><div class="wrap">
   <div class="brand"><span class="dot"></span>💱 환율 브리핑</div>
   <div class="spacer"></div>
+  <span class="live" id="live" hidden><span class="lvdot"></span>실시간</span>
   <span class="slotbadge" id="slotbadge">—</span>
   <span class="gen" id="gen"></span>
 </div></div>
@@ -163,16 +172,30 @@ const NF=(n,d=1)=>n==null?'-':(+n).toLocaleString('ko-KR',{minimumFractionDigits
 const SGN=p=>p==null?'-':(p>0?'▲':(p<0?'▼':'–'))+Math.abs(p).toFixed(2)+'%';
 const CLS=p=>p==null?'neu':(p>0?'up':(p<0?'down':'neu'));
 const SIGCLS=v=>!v?'neu':(v.indexOf('적기')>=0?'good':(v.indexOf('관망')>=0?'warn':'neu'));
-let DATA=null, SEL='USD', MODE='daily', SERIES='base';
-const SLABEL={base:'매매기준율',buy:'현찰 살 때',sell:'현찰 팔 때'};
+let DATA=null, SEL='USD', MODE='daily', SERIES='buy';
+const SLABEL={base:'매매기준율',buy:'현찰 살 때',sell:'현찰 팔 때',all:'전체(중첩)'};
+const SCOL={base:'var(--accent)',buy:'var(--up)',sell:'var(--good)'};
 
 async function boot(){
   try{ DATA=await (await fetch('data/app.json',{cache:'no-store'})).json(); }
   catch(e){ document.getElementById('app').innerHTML='<div class="loading">데이터가 아직 없습니다.</div>'; return; }
+  document.getElementById('live').hidden=false;
   document.getElementById('slotbadge').textContent=(DATA.slotKo||'')+' '+(DATA.slotLabel||'');
-  document.getElementById('gen').textContent='업데이트 '+(DATA.generated||'');
+  document.getElementById('gen').textContent='최근 업데이트 '+(DATA.generated||'');
   SEL=(DATA.currencies[0]||{}).code||'USD';
   render();
+  setInterval(refresh,60000);   // 장중 자동 갱신(사이트 데이터가 바뀌면 반영)
+}
+async function refresh(){
+  try{
+    const d=await (await fetch('data/app.json',{cache:'no-store'})).json();
+    if(d && d.generated!==DATA.generated){
+      DATA=d;
+      document.getElementById('slotbadge').textContent=(DATA.slotKo||'')+' '+(DATA.slotLabel||'');
+      document.getElementById('gen').textContent='최근 업데이트 '+(DATA.generated||'');
+      render();
+    }
+  }catch(e){}
 }
 
 function render(){
@@ -197,8 +220,10 @@ function render(){
         <button data-s="base" class="${SERIES==='base'?'on':''}">기준율</button>
         <button data-s="buy" class="${SERIES==='buy'?'on':''}">살 때</button>
         <button data-s="sell" class="${SERIES==='sell'?'on':''}">팔 때</button>
+        <button data-s="all" class="${SERIES==='all'?'on':''}">전체(중첩)</button>
       </div>
     </div>
+    <div id="legend" class="clegend"></div>
     <svg id="chart"></svg>
   </div>
 
@@ -241,7 +266,7 @@ function render(){
   document.querySelectorAll('.cc').forEach(el=>el.onclick=()=>{SEL=el.dataset.c;syncSeg();drawChart();});
   wireSeg('cur-seg','c',v=>{SEL=v;});
   wireSeg('mode-seg','m',v=>{MODE=v;});
-  wireSeg('series-seg','s',v=>{SERIES=v;});
+  wireSeg('series-seg','s',v=>{SERIES=v;redrawSparks();});
   drawChart();
 }
 
@@ -250,6 +275,7 @@ function ccard(c,i){
   const slot=c.slot?`<span class="dl ${CLS(c.slot.baseChgPct)}">${SGN(c.slot.baseChgPct)}<small>전시간</small></span>`:'';
   return `<div class="cc ${c.code===SEL?'sel':''}" data-c="${c.code}">
     <div class="top1"><span class="flag">${c.flag}</span><span class="lab">${esc(c.label)}</span><span class="unit">${esc(c.unit)}</span></div>
+    <div class="cclab">현찰 살 때</div>
     <div class="buy tabnum" id="buy-${c.code}">${NF(c.buy)}<span class="w">원</span></div>
     <div class="rows"><span>팔 때 <b>${NF(c.sell)}</b></span><span>기준 <b>${NF(c.base,2)}</b></span></div>
     <div class="badges">
@@ -283,10 +309,13 @@ function aicard(c){
   </div>`;
 }
 
-/* ---------- 스파크라인(카드 미니차트) ---------- */
+/* ---------- 스파크라인(카드 미니차트) — 선택 시리즈 반영 ---------- */
+function sparkKey(){return SERIES==='all'?'base':SERIES;}
+function redrawSparks(){(DATA.currencies||[]).forEach(drawSpark);}
 function drawSpark(c){
   const el=document.getElementById('spark-'+c.code); if(!el)return;
-  const arr=(c.daily||[]).map(d=>d.base).filter(v=>v!=null).slice(-30);
+  const key=sparkKey();
+  const arr=(c.daily||[]).map(d=>d[key]).filter(v=>v!=null).slice(-30);
   if(arr.length<2){el.style.display='none';return;}
   const W=200,H=38,pad=3;
   const mn=Math.min(...arr),mx=Math.max(...arr),rg=(mx-mn)||1;
@@ -329,61 +358,79 @@ function drawGauge(c){
 function pol(cx,cy,r,a){return {x:cx+r*Math.cos(a),y:cy+r*Math.sin(a)};}
 
 /* ---------- 메인 라인차트(d3) + 모션 ---------- */
-function seriesData(c){
-  if(MODE==='intraday'){
-    return (c.intraday||[]).map((d,i)=>({x:i,label:(d.date? d.date.slice(5)+' ':'')+ (d.slotLabel||''),v:d[SERIES]})).filter(d=>d.v!=null);
-  }
-  return (c.daily||[]).map((d,i)=>({x:i,label:d.date,v:d[SERIES]})).filter(d=>d.v!=null);
+function pointsOf(c){
+  const src=MODE==='intraday'?(c.intraday||[]):(c.daily||[]);
+  return src.map((d,i)=>({x:i,
+    label:MODE==='intraday'?((d.date?d.date.slice(5)+' ':'')+(d.slotLabel||'')):d.date,
+    base:d.base, buy:d.buy, sell:d.sell}));
 }
 function drawChart(){
   const c=DATA.currencies.find(x=>x.code===SEL); if(!c)return;
-  const data=seriesData(c);
+  const pts=pointsOf(c);
+  const keys=SERIES==='all'?['base','buy','sell']:[SERIES];
   const svg=d3.select('#chart'); svg.selectAll('*').remove();
+  const leg=document.getElementById('legend'); leg.innerHTML='';
   const box=document.getElementById('chart').getBoundingClientRect();
-  const W=box.width||800,H=320,m={t:16,r:16,b:26,l:56};
+  const W=box.width||800,H=320,m={t:16,r:16,b:26,l:58};
   svg.attr('viewBox',`0 0 ${W} ${H}`);
-  if(data.length<2){svg.append('text').attr('x',W/2).attr('y',H/2).attr('text-anchor','middle').attr('fill','var(--mut)').text(MODE==='intraday'?'시간별 데이터가 아직 쌓이는 중입니다':'데이터 부족');return;}
-  const x=d3.scalePoint().domain(data.map(d=>d.x)).range([m.l,W-m.r]);
-  const ext=d3.extent(data,d=>d.v),pad=(ext[1]-ext[0]||1)*0.12;
+  if(pts.length<2){svg.append('text').attr('x',W/2).attr('y',H/2).attr('text-anchor','middle').attr('fill','var(--mut)').text(MODE==='intraday'?'시간별 데이터가 아직 쌓이는 중입니다':'데이터 부족');return;}
+  const x=d3.scalePoint().domain(pts.map(d=>d.x)).range([m.l,W-m.r]);
+  let vals=[]; keys.forEach(k=>pts.forEach(p=>{if(p[k]!=null)vals.push(p[k]);}));
+  const ext=d3.extent(vals),pad=(ext[1]-ext[0]||1)*0.12;
   const y=d3.scaleLinear().domain([ext[0]-pad,ext[1]+pad]).range([H-m.b,m.t]);
-  const rising=data[data.length-1].v>=data[0].v;
-  const col=rising?'var(--up)':'var(--down)';
   // grid + y axis
   const yaxis=svg.append('g').attr('class','axis grid').attr('transform',`translate(${m.l},0)`)
     .call(d3.axisLeft(y).ticks(5).tickSize(-(W-m.l-m.r)).tickFormat(d=>d.toLocaleString('ko-KR')));
   yaxis.select('.domain').remove();
-  // x axis (라벨 솎아내기)
-  const step=Math.ceil(data.length/6);
+  // x axis
+  const step=Math.ceil(pts.length/6);
   svg.append('g').attr('class','axis').attr('transform',`translate(0,${H-m.b})`)
-    .call(d3.axisBottom(x).tickValues(data.filter((d,i)=>i%step===0).map(d=>d.x)).tickFormat(v=>{const d=data.find(z=>z.x===v);return d?d.label:'';}));
-  // area + line
-  const line=d3.line().x(d=>x(d.x)).y(d=>y(d.v)).curve(d3.curveMonotoneX);
-  const area=d3.area().x(d=>x(d.x)).y0(H-m.b).y1(d=>y(d.v)).curve(d3.curveMonotoneX);
-  const gid='grad-main';
+    .call(d3.axisBottom(x).tickValues(pts.filter((d,i)=>i%step===0).map(d=>d.x)).tickFormat(v=>{const d=pts.find(z=>z.x===v);return d?d.label:'';}));
   const defs=svg.append('defs');
-  const lg=defs.append('linearGradient').attr('id',gid).attr('x1',0).attr('x2',0).attr('y1',0).attr('y2',1);
-  lg.append('stop').attr('offset','0').attr('stop-color',col).attr('stop-opacity',.22);
-  lg.append('stop').attr('offset','1').attr('stop-color',col).attr('stop-opacity',0);
-  svg.append('path').datum(data).attr('class','area').attr('fill',`url(#${gid})`).attr('d',area);
-  const path=svg.append('path').datum(data).attr('class','line-path').attr('stroke',col).attr('d',line);
-  const L=path.node().getTotalLength();
-  path.attr('stroke-dasharray',L).attr('stroke-dashoffset',L)
-    .transition().duration(1000).ease(d3.easeCubicOut).attr('stroke-dashoffset',0);
-  // last dot
-  const last=data[data.length-1];
-  svg.append('circle').attr('class','dot-last').attr('cx',x(last.x)).attr('cy',y(last.v)).attr('r',0)
-    .attr('fill',col).attr('color',col).transition().delay(900).duration(300).attr('r',4.5);
-  // hover
+  const single=keys.length===1;
+  keys.forEach((k,ki)=>{
+    const data=pts.filter(p=>p[k]!=null).map(p=>({x:p.x,v:p[k]}));
+    if(data.length<2)return;
+    let col;
+    if(single){const rising=data[data.length-1].v>=data[0].v; col=rising?'var(--up)':'var(--down)';}
+    else col=SCOL[k];
+    const line=d3.line().x(d=>x(d.x)).y(d=>y(d.v)).curve(d3.curveMonotoneX);
+    if(single){
+      const gid='grad-main';
+      const g=defs.append('linearGradient').attr('id',gid).attr('x1',0).attr('x2',0).attr('y1',0).attr('y2',1);
+      g.append('stop').attr('offset','0').attr('stop-color',col).attr('stop-opacity',.22);
+      g.append('stop').attr('offset','1').attr('stop-color',col).attr('stop-opacity',0);
+      const area=d3.area().x(d=>x(d.x)).y0(H-m.b).y1(d=>y(d.v)).curve(d3.curveMonotoneX);
+      svg.append('path').datum(data).attr('class','area').attr('fill',`url(#${gid})`).attr('d',area);
+    }
+    const path=svg.append('path').datum(data).attr('class','line-path').attr('stroke',col).attr('d',line);
+    const L=path.node().getTotalLength();
+    path.attr('stroke-dasharray',L).attr('stroke-dashoffset',L)
+      .transition().duration(950).delay(ki*160).ease(d3.easeCubicOut).attr('stroke-dashoffset',0);
+    const last=data[data.length-1];
+    svg.append('circle').attr('class','dot-last').attr('cx',x(last.x)).attr('cy',y(last.v)).attr('r',0)
+      .attr('fill',col).attr('color',col).transition().delay(850+ki*160).duration(300).attr('r',4.5);
+  });
+  // legend (중첩 모드)
+  if(!single){
+    leg.innerHTML=keys.map(k=>`<span class="lg"><span class="sw" style="background:${SCOL[k]}"></span>${SLABEL[k]}</span>`).join('');
+  }
+  // hover (모든 시리즈 값 표시)
   const tip=document.getElementById('ctip');
-  const focus=svg.append('circle').attr('r',4).attr('fill',col).style('opacity',0);
+  const guide=svg.append('line').attr('y1',m.t).attr('y2',H-m.b).attr('stroke','var(--line)').style('opacity',0);
+  const foci=keys.map(k=>svg.append('circle').attr('r',3.5).attr('fill',SCOL[k]||'var(--accent)').style('opacity',0));
   svg.append('rect').attr('x',m.l).attr('y',m.t).attr('width',W-m.l-m.r).attr('height',H-m.t-m.b)
     .attr('fill','transparent')
     .on('mousemove',(ev)=>{const mx=d3.pointer(ev)[0];
-      let best=data[0],bd=1e9; data.forEach(d=>{const dd=Math.abs(x(d.x)-mx);if(dd<bd){bd=dd;best=d;}});
-      focus.attr('cx',x(best.x)).attr('cy',y(best.v)).style('opacity',1);
-      tip.style.opacity=1;tip.style.left=(ev.clientX+12)+'px';tip.style.top=(ev.clientY-10)+'px';
-      tip.innerHTML=`<b>${esc(best.label)}</b> · ${SLABEL[SERIES]} ${best.v.toLocaleString('ko-KR')}원`;})
-    .on('mouseleave',()=>{focus.style('opacity',0);tip.style.opacity=0;});
+      let best=pts[0],bd=1e9; pts.forEach(p=>{const dd=Math.abs(x(p.x)-mx);if(dd<bd){bd=dd;best=p;}});
+      guide.attr('x1',x(best.x)).attr('x2',x(best.x)).style('opacity',1);
+      let rows='';
+      keys.forEach((k,i)=>{ if(best[k]==null){foci[i].style('opacity',0);return;}
+        foci[i].attr('cx',x(best.x)).attr('cy',y(best[k])).style('opacity',1);
+        rows+=`<div style="display:flex;gap:8px;justify-content:space-between"><span style="color:${SCOL[k]}">■</span><span>${SLABEL[k]}</span><b>${best[k].toLocaleString('ko-KR')}원</b></div>`;});
+      tip.style.opacity=1;tip.style.left=(ev.clientX+14)+'px';tip.style.top=(ev.clientY-10)+'px';
+      tip.innerHTML=`<div style="margin-bottom:3px"><b>${esc(best.label)}</b></div>${rows}`;})
+    .on('mouseleave',()=>{guide.style('opacity',0);foci.forEach(f=>f.style('opacity',0));tip.style.opacity=0;});
 }
 
 /* ---------- 공통 ---------- */

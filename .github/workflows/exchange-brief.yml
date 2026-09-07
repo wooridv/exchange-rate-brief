@@ -2,21 +2,19 @@ name: 환율 브리핑
 
 on:
   schedule:
-    # GitHub 크론은 UTC 기준(수 분 지연 가능). 평일(월~금)만.
-    - cron: "0 0 * * 1-5"   # 09:00 KST  아침
-    - cron: "0 3 * * 1-5"   # 12:00 KST  점심
-    - cron: "0 6 * * 1-5"   # 15:00 KST  오후
+    # 장중(평일) 20분마다 사이트/시간별 데이터 갱신. UTC 기준(KST-9).
+    # 00:00~07:40 UTC = 09:00~16:40 KST. 잔디 발송은 brief.py 가 09/12/15시에만 1회.
+    - cron: "*/20 0-7 * * 1-5"
   workflow_dispatch:
     inputs:
       slot:
-        description: "수동 실행 슬롯"
+        description: "수동 발송 슬롯(강제 발송)"
         required: false
         default: "morning"
         type: choice
         options: [morning, lunch, afternoon]
 
 permissions:
-  contents: write   # data/history.jsonl 커밋
   pages: write
   id-token: write
 
@@ -39,29 +37,27 @@ jobs:
         with:
           python-version: "3.12"
 
+      # 시간별(전시간 대비) 그래프용 누적 데이터. 실행 간 캐시로 유지(커밋 노이즈 방지).
+      # 전일 대비 일별 데이터는 네이버에서 매번 전체 수집하므로 캐시와 무관.
+      - name: 시간별 히스토리 복원/저장
+        uses: actions/cache@v4
+        with:
+          path: data/history.jsonl
+          key: fx-history-${{ github.run_id }}
+          restore-keys: |
+            fx-history-
+
       - name: 브리핑 실행
         env:
           JANDI_WEBHOOK_URL: ${{ secrets.JANDI_WEBHOOK_URL }}
           REPORT_BASE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
           HISTORY_DAYS: "60"
         run: |
-          # 어떤 크론(=시각)에 실행됐는지로 슬롯을 확정(지연돼도 안전)
-          case "${{ github.event.schedule }}" in
-            "0 0 * * 1-5") SLOT="morning" ;;
-            "0 3 * * 1-5") SLOT="lunch" ;;
-            "0 6 * * 1-5") SLOT="afternoon" ;;
-            *) SLOT="${{ github.event.inputs.slot || 'morning' }}" ;;
-          esac
-          echo "slot=$SLOT"
-          python brief.py --out site --slot "$SLOT"
-
-      - name: 히스토리 커밋
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/history.jsonl
-          git diff --cached --quiet || git commit -m "chore: 환율 히스토리 업데이트"
-          git push || echo "push 생략(변경 없음)"
+          if [ -n "${{ github.event.inputs.slot }}" ]; then
+            python brief.py --out site --slot "${{ github.event.inputs.slot }}" --force
+          else
+            python brief.py --out site
+          fi
 
       - name: 리포트 폴더 보장
         run: |

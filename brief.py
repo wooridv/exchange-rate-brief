@@ -297,8 +297,16 @@ def append_history(entry):
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-def slot_exists(history, date, slot):
-    return any(h.get("date") == date and h.get("slot") == slot for h in history)
+def point_exists(history, date, point_label):
+    """같은 날짜·시각(HH:MM) 포인트가 이미 있으면 True(같은 분 재실행 중복 방지)."""
+    return any(h.get("date") == date and h.get("slotLabel") == point_label for h in history)
+
+
+def posted_slot_today(history, date, slot_key):
+    """오늘 해당 발송 슬롯(morning/lunch/afternoon)으로 이미 잔디를 보냈으면 True."""
+    if not slot_key:
+        return False
+    return any(h.get("date") == date and h.get("postSlot") == slot_key for h in history)
 
 
 def prev_slot_rates(history, code):
@@ -310,7 +318,7 @@ def prev_slot_rates(history, code):
     return None
 
 
-def intraday_series(history, code, limit=40):
+def intraday_series(history, code, limit=48):
     """대시보드 시간별(슬롯) 시계열."""
     out = []
     for h in history[-limit:]:
@@ -326,7 +334,7 @@ def intraday_series(history, code, limit=40):
 # --------------------------------------------------------------------------
 # 번들 구성 + 사이트
 # --------------------------------------------------------------------------
-def build_bundle(now, slot, slot_label, prices, history):
+def build_bundle(now, slot_key, disp_label, point_label, prices, history):
     currencies = []
     rates_snapshot = {}
     for key, code, flag, label, unit in CURRENCIES:
@@ -362,15 +370,16 @@ def build_bundle(now, slot, slot_label, prices, history):
             "daily": daily,
             "intraday": intraday_series(history, key) + [{
                 "ts": now.isoformat(timespec="minutes"), "date": now.strftime("%Y-%m-%d"),
-                "slotLabel": slot_label, "base": cur["base"], "buy": cur["buy"], "sell": cur["sell"]}],
+                "slotLabel": point_label, "base": cur["base"], "buy": cur["buy"], "sell": cur["sell"]}],
         })
         rates_snapshot[key] = {"base": cur["base"], "buy": cur["buy"], "sell": cur["sell"],
-                               "dayChgPct": cur["dayChgPct"], "slotLabel": slot_label}
+                               "dayChgPct": cur["dayChgPct"], "slotLabel": point_label}
 
     return {
         "generated": now.strftime("%Y-%m-%d %H:%M"),
         "date": now.strftime("%Y-%m-%d"),
-        "slot": slot, "slotLabel": slot_label, "slotKo": SLOT_KO.get(slot, "수시"),
+        "slot": slot_key or "adhoc", "slotLabel": disp_label,
+        "slotKo": SLOT_KO.get(slot_key, "수시"),
         "source": SOURCE_NAME,
         "currencies": currencies,
     }, rates_snapshot
@@ -388,14 +397,18 @@ def write_site(bundle, out_dir):
 # --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
+SLOT_CANON = {"morning": "09:00", "lunch": "12:00", "afternoon": "15:00"}
+
+
 def resolve_slot(now, override):
+    """반환: (post_slot_key or None, 표시라벨).
+    post_slot_key 가 있으면 그 시각대(9/12/15시)에 잔디 발송 대상."""
     if override:
-        label = {"morning": "09:00", "lunch": "12:00", "afternoon": "15:00"}.get(override, now.strftime("%H:%M"))
-        return override, label
-    hit = SLOT_MAP.get(now.hour)
+        return override, SLOT_CANON.get(override, now.strftime("%H:%M"))
+    hit = SLOT_MAP.get(now.hour)   # 9/12/15시 → (key, 캐논라벨)
     if hit:
-        return hit
-    return "adhoc", now.strftime("%H:%M")
+        return hit[0], hit[1]
+    return None, now.strftime("%H:%M")
 
 
 def main(argv=None):
@@ -434,8 +447,10 @@ def main(argv=None):
     if blocked:
         print("오늘(%s)은 %s → 잔디 발송·기록 제외(사이트만 갱신)" % (today, reason))
 
-    slot, slot_label = resolve_slot(now, args.slot)
-    print("실행: %s %s(%s)" % (now.strftime("%Y-%m-%d %H:%M"), slot_label, slot))
+    post_slot, disp_label = resolve_slot(now, args.slot)
+    point_label = now.strftime("%H:%M")  # 시간별 그래프용 실제 시각(분 단위)
+    print("실행: %s  표시=%s  발송슬롯=%s" % (
+        now.strftime("%Y-%m-%d %H:%M"), disp_label, post_slot or "-"))
 
     # 통화별 수집(개별 실패 격리)
     prices = {}
@@ -451,7 +466,7 @@ def main(argv=None):
         return 1
 
     history = read_history()
-    bundle, snapshot = build_bundle(now, slot, slot_label, prices, history)
+    bundle, snapshot = build_bundle(now, post_slot, disp_label, point_label, prices, history)
 
     write_site(bundle, args.out)
     print("\n" + console_summary(bundle))
@@ -462,33 +477,38 @@ def main(argv=None):
     if args.dry_run:
         print("\n(dry-run: 발송·기록 안 함)")
         return 0
-
     if blocked:
         return 0  # 휴일/주말: 사이트만 갱신하고 종료
 
-    # 슬롯 중복 방지(같은 날·슬롯 재실행 시 재발송/중복기록 방지)
-    already = slot_exists(history, bundle["date"], slot)
-    if already and not args.force:
-        print("\n이미 처리한 슬롯(%s %s) → 사이트만 갱신, 발송·기록 skip" % (bundle["date"], slot))
-        return 0
+    # 잔디 발송 여부: 9/12/15시 슬롯이고, 오늘 그 슬롯을 아직 안 보냈을 때만
+    already_posted = posted_slot_today(history, bundle["date"], post_slot)
+    do_post = (bool(post_slot) and not already_posted and not args.no_post
+               and bool(webhook)) or (args.force and bool(webhook) and not args.no_post)
 
-    if not already:
+    posted_ok = False
+    if do_post:
+        s, r = post_jandi(webhook, body, jandi_color(bundle))
+        posted_ok = 200 <= s < 300
+        print("\n잔디 발송(%s):" % (post_slot or "force"), s, r)
+    else:
+        why = ("발송슬롯 아님(시간별 갱신만)" if not post_slot else
+               "이미 발송한 슬롯" if already_posted else
+               "--no-post" if args.no_post else "웹훅 미설정")
+        print("\n잔디 미발송: %s" % why)
+
+    # 시간별 히스토리 기록(같은 분 중복만 방지). 발송 성공 시 postSlot 마킹.
+    if not point_exists(history, bundle["date"], point_label):
         append_history({
             "ts": now.isoformat(timespec="minutes"),
-            "date": bundle["date"], "slot": slot, "slotLabel": slot_label,
+            "date": bundle["date"], "slotLabel": point_label,
+            "postSlot": (post_slot if (do_post and posted_ok) else None),
             "rates": snapshot,
         })
-        print("히스토리 기록: %s" % HISTORY_FILE)
+        print("히스토리 기록: %s (%s)" % (HISTORY_FILE, point_label))
 
-    if args.no_post:
-        print("(--no-post: 잔디 미발송)")
-        return 0
-    if not webhook:
-        print("JANDI_WEBHOOK_URL 미설정 → 발송 불가", file=sys.stderr)
-        return 2
-    s, r = post_jandi(webhook, body, jandi_color(bundle))
-    print("\n잔디 발송:", s, r)
-    return 0 if 200 <= s < 300 else 1
+    if do_post and not posted_ok:
+        return 1
+    return 0
 
 
 from app_html import SPA_HTML  # noqa: E402
