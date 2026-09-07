@@ -7,8 +7,13 @@ on:
     - cron: "*/20 0-7 * * 1-5"
   workflow_dispatch:
     inputs:
+      send:
+        description: "지금 잔디로도 발송(기본: 사이트만 배포)"
+        required: false
+        default: false
+        type: boolean
       slot:
-        description: "수동 발송 슬롯(강제 발송)"
+        description: "발송 시 슬롯"
         required: false
         default: "morning"
         type: choice
@@ -53,7 +58,7 @@ jobs:
           REPORT_BASE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
           HISTORY_DAYS: "60"
         run: |
-          if [ -n "${{ github.event.inputs.slot }}" ]; then
+          if [ "${{ github.event.inputs.send }}" = "true" ]; then
             python brief.py --out site --slot "${{ github.event.inputs.slot }}" --force
           else
             python brief.py --out site
