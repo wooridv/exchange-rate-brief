@@ -462,6 +462,9 @@ def build_bundle(now, slot_key, disp_label, point_label, prices, history):
         currencies.append({
             "code": key, "flag": flag, "label": label, "unit": unit,
             "base": cur["base"], "buy": cur["buy"], "sell": cur["sell"],
+            "prevBase": (prev["base"] if prev else None),
+            "prevBuy": (prev["buy"] if prev else None),
+            "prevSell": (prev["sell"] if prev else None),
             "day": day, "slot": slot_delta,
             "signal": compute_signal(rows),
             "daily": daily,

@@ -234,12 +234,16 @@ function render(){
   <div class="tblscroll">
     <table><thead><tr>
       <th>통화</th><th class="num">현찰 살 때</th><th class="num">현찰 팔 때</th><th class="num">매매기준율</th>
+      <th class="num">전일 기준가</th><th class="num">전일 살때</th><th class="num">전일 팔때</th>
       <th class="num">전일대비</th><th class="num">전시간대비</th><th class="num">AI점수</th><th>판정</th>
     </tr></thead><tbody>
     ${cs.map(c=>{const sg=c.signal||{};return `<tr>
       <td class="nm">${c.flag} ${esc(c.label)}</td>
       <td class="num">${NF(c.buy)}</td><td class="num">${NF(c.sell)}</td>
       <td class="num">${NF(c.base,2)}</td>
+      <td class="num" style="color:var(--mut)">${NF(c.prevBase,2)}</td>
+      <td class="num" style="color:var(--mut)">${NF(c.prevBuy)}</td>
+      <td class="num" style="color:var(--mut)">${NF(c.prevSell)}</td>
       <td class="num ${CLS(c.day.baseChgPct)}">${SGN(c.day.baseChgPct)}</td>
       <td class="num ${CLS(c.slot&&c.slot.baseChgPct)}">${c.slot?SGN(c.slot.baseChgPct):'—'}</td>
       <td class="num">${sg.score!=null?sg.score:'-'}</td>
