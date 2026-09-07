@@ -46,6 +46,7 @@ CURRENCIES = [
     ("JPY", "FX_JPYKRW", "\U0001F1EF\U0001F1F5", "JPY100", "엔화 (100¥)"),
     ("CNY", "FX_CNYKRW", "\U0001F1E8\U0001F1F3", "CNY", "위안 (1¥)"),
 ]
+KO_NAME = {"USD": "달러", "EUR": "유로", "JPY": "엔화", "CNY": "위안"}
 PRICES_URL = "https://api.stock.naver.com/marketindex/exchange/%s/prices?page=1&pageSize=%d"
 WEEKDAY_KO = ["월", "화", "수", "목", "금", "토", "일"]
 HISTORY_FILE = os.path.join("data", "history.jsonl")
@@ -222,16 +223,20 @@ def date_label(ds):
 # --------------------------------------------------------------------------
 # 잔디
 # --------------------------------------------------------------------------
+def _ko_name(code):
+    name = KO_NAME.get(code, code)
+    return name + "(100엔)" if code == "JPY" else name
+
+
 def jandi_body(bundle, report_url=None):
-    """7줄 이내: 헤더 + 4통화(살때/팔때·전일대비) + AI 한 줄 + 링크."""
+    """7줄 이내: 헤더 + 4통화(한글명·살때/팔때·전일대비) + AI 한 줄 + 링크."""
     lines = []
-    lines.append("💱 환율 브리핑 · %s %s  현찰[살때/팔때]" % (
-        date_label(bundle["date"]), bundle["slotLabel"]))
+    lines.append("💱 환율 브리핑  %s %s" % (date_label(bundle["date"]), bundle["slotLabel"]))
     for c in bundle["currencies"]:
-        lines.append("%s %s %s/%s %s" % (
-            c["flag"], c["label"], _fmt(c["buy"]), _fmt(c["sell"]),
+        lines.append("%s %s  살때: %s · 팔때: %s · %s" % (
+            c["flag"], _ko_name(c["code"]), _fmt(c["buy"]), _fmt(c["sell"]),
             sgn(c["day"]["baseChgPct"])))
-    ai = " · ".join("%s %s" % (c["code"], c["signal"]["short"])
+    ai = " · ".join("%s %s" % (KO_NAME.get(c["code"], c["code"]), c["signal"]["short"])
                     for c in bundle["currencies"] if c.get("signal"))
     if ai:
         lines.append("🤖 AI 매수신호: " + ai)
